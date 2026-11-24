@@ -109,6 +109,42 @@ function streamOptionSignal(options: unknown): AbortSignal | undefined {
 }
 
 /**
+ * Give a stream wrapper its own abort switch, chained to the caller's signal.
+ *
+ * The SDK's stream reader only releases its reader lock when a consumer stops
+ * early, so the HTTP response stays open until the run ends. Each open stream
+ * holds one connection, browsers cap an HTTP/1.1 origin at six, and a stream
+ * nobody consumes then starves every later request (navigation included).
+ * Aborting the wrapper's signal in ``finally`` closes the response as soon as
+ * the consumer stops, for a gap, an error event, or an unmounted view.
+ */
+function streamAbortSignal(outerSignal: AbortSignal | undefined): {
+  signal: AbortSignal | undefined;
+  release: () => void;
+} {
+  if (
+    typeof AbortController === "undefined" ||
+    typeof AbortSignal === "undefined" ||
+    typeof AbortSignal.any !== "function"
+  ) {
+    return {
+      signal: outerSignal,
+      release: () => {
+        // Without AbortSignal.any the caller's signal is the only way to close
+        // this stream, so there is nothing extra to release.
+      },
+    };
+  }
+  const controller = new AbortController();
+  return {
+    signal: outerSignal
+      ? AbortSignal.any([outerSignal, controller.signal])
+      : controller.signal,
+    release: () => controller.abort(),
+  };
+}
+
+/**
  * Recover the submitted input before replaying an active run. The incremental
  * chat stream intentionally omits `values`, so a page reload can otherwise
  * receive the run's AI/tool chunks before its human message has reached the
@@ -501,40 +537,48 @@ function createCompatibleClient(isMock?: boolean): LangGraphClient {
   // iteration rather than when `runs.stream()` is called.
   client.runs.stream = async function* (threadId, assistantId, payload) {
     const sanitizedPayload = forceChatRunStreamOptions(payload);
+    const { signal, release } = streamAbortSignal(
+      streamOptionSignal(sanitizedPayload),
+    );
     const originalOnRunCreated = sanitizedPayload?.onRunCreated;
     let runId: string | undefined;
-    const initialStream = originalRunStream(threadId, assistantId, {
-      ...sanitizedPayload,
-      onRunCreated(meta) {
-        runId = meta.run_id;
-        originalOnRunCreated?.(meta);
-      },
-    });
+    try {
+      const initialStream = originalRunStream(threadId, assistantId, {
+        ...sanitizedPayload,
+        signal,
+        onRunCreated(meta) {
+          runId = meta.run_id;
+          originalOnRunCreated?.(meta);
+        },
+      });
 
-    const recoveredStream = recoverStreamReplayGaps({
-      client,
-      threadId,
-      expectedRunId: () => runId,
-      initialStream,
-      signal: streamOptionSignal(sanitizedPayload),
-      reconnectRun: undefined,
-      submittedInput: sanitizedPayload?.input,
-      resume: (resolvedRunId, lastEventId) => {
-        // Keep the recovery run id available to the shared inactive-stream
-        // handler even if the SDK omitted its onRunCreated callback.
-        runId = resolvedRunId;
-        return originalJoinStream(threadId, resolvedRunId, {
-          lastEventId,
-          signal: sanitizedPayload?.signal,
-          streamMode: sanitizedPayload?.streamMode,
-        });
-      },
-    });
-    yield* handleInactiveRunStream({
-      threadId,
-      expectedRunId: () => runId,
-      stream: recoveredStream,
-    });
+      const recoveredStream = recoverStreamReplayGaps({
+        client,
+        threadId,
+        expectedRunId: () => runId,
+        initialStream,
+        signal,
+        reconnectRun: undefined,
+        submittedInput: sanitizedPayload?.input,
+        resume: (resolvedRunId, lastEventId) => {
+          // Keep the recovery run id available to the shared inactive-stream
+          // handler even if the SDK omitted its onRunCreated callback.
+          runId = resolvedRunId;
+          return originalJoinStream(threadId, resolvedRunId, {
+            lastEventId,
+            signal,
+            streamMode: sanitizedPayload?.streamMode,
+          });
+        },
+      });
+      yield* handleInactiveRunStream({
+        threadId,
+        expectedRunId: () => runId,
+        stream: recoveredStream,
+      });
+    } finally {
+      release();
+    }
   } as typeof client.runs.stream;
 
   const originalCancel = client.runs.cancel.bind(client.runs);
@@ -557,53 +601,60 @@ function createCompatibleClient(isMock?: boolean): LangGraphClient {
   }) as typeof client.runs.cancel;
 
   client.runs.joinStream = async function* (threadId, runId, options) {
-    // Short-circuit reconnects to runs that have already finished: otherwise a
-    // reload after the backend's stream bridge is reaped blocks forever on a
-    // drained condition variable, pinning ``isLoading`` true so the first
-    // post-reload message is routed to ``stop`` instead of ``submit``.
-    const reconnectSignal = streamOptionSignal(options);
-    const reconnectRun = threadId
-      ? await getReconnectRun(client, threadId, runId, reconnectSignal)
-      : undefined;
-    if (reconnectRun && TERMINAL_RUN_STATUSES.has(reconnectRun.status)) {
-      clearReconnectRun(threadId, runId);
-      return;
-    }
-    if (threadId && reconnectRun) {
-      const reconnectSnapshot = await loadReconnectInputSnapshot(
-        client,
-        threadId,
-        runId,
-        reconnectRun,
-        undefined,
-        reconnectSignal,
-      );
-      if (reconnectSnapshot) {
-        // This is an internal hydration frame. The requested network stream
-        // remains incremental; the SDK receives the current input before any
-        // replayed messages-tuple AI/tool chunks and deduplicates it against
-        // later history or stream copies by message id.
-        yield { event: "values", data: reconnectSnapshot };
-      }
-    }
     const sanitizedOptions = forceChatRunStreamOptions(options);
-    yield* handleInactiveRunStream({
-      threadId,
-      expectedRunId: () => runId,
-      stream: recoverStreamReplayGaps({
-        client,
+    const { signal, release } = streamAbortSignal(
+      streamOptionSignal(sanitizedOptions),
+    );
+    try {
+      // Short-circuit reconnects to runs that have already finished: otherwise
+      // a reload after the backend's stream bridge is reaped blocks forever on
+      // a drained condition variable, pinning ``isLoading`` true so the first
+      // post-reload message is routed to ``stop`` instead of ``submit``.
+      const reconnectRun = threadId
+        ? await getReconnectRun(client, threadId, runId, signal)
+        : undefined;
+      if (reconnectRun && TERMINAL_RUN_STATUSES.has(reconnectRun.status)) {
+        clearReconnectRun(threadId, runId);
+        return;
+      }
+      if (threadId && reconnectRun) {
+        const reconnectSnapshot = await loadReconnectInputSnapshot(
+          client,
+          threadId,
+          runId,
+          reconnectRun,
+          undefined,
+          signal,
+        );
+        if (reconnectSnapshot) {
+          // This is an internal hydration frame. The requested network stream
+          // remains incremental; the SDK receives the current input before any
+          // replayed messages-tuple AI/tool chunks and deduplicates it against
+          // later history or stream copies by message id.
+          yield { event: "values", data: reconnectSnapshot };
+        }
+      }
+      const streamOptions = { ...sanitizedOptions, signal };
+      yield* handleInactiveRunStream({
         threadId,
         expectedRunId: () => runId,
-        initialStream: originalJoinStream(threadId, runId, sanitizedOptions),
-        signal: reconnectSignal,
-        reconnectRun,
-        resume: (resolvedRunId, lastEventId) =>
-          originalJoinStream(threadId, resolvedRunId, {
-            ...sanitizedOptions,
-            lastEventId,
-          }),
-      }),
-    });
+        stream: recoverStreamReplayGaps({
+          client,
+          threadId,
+          expectedRunId: () => runId,
+          initialStream: originalJoinStream(threadId, runId, streamOptions),
+          signal,
+          reconnectRun,
+          resume: (resolvedRunId, lastEventId) =>
+            originalJoinStream(threadId, resolvedRunId, {
+              ...streamOptions,
+              lastEventId,
+            }),
+        }),
+      });
+    } finally {
+      release();
+    }
   } as typeof client.runs.joinStream;
 
   return client;

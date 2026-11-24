@@ -2620,6 +2620,33 @@ export function useThreadStream({
   });
   liveInterruptRef.current = thread.interrupt;
 
+  // Leaving this view must close its run stream. A stream pins one of the
+  // browser's six HTTP/1.1 connections to the Gateway until the run ends, so a
+  // few thread switches during long runs leave every later request queued and
+  // the sidebar stops responding. Clear the tab's reconnect pointer first:
+  // ``stop`` also asks the Gateway to cancel the run that pointer names, and
+  // navigation must not cancel work the user left running.
+  const threadRef = useRef(thread);
+  threadRef.current = thread;
+  const streamingThreadIdRef = useRef(onStreamThreadId);
+  streamingThreadIdRef.current = onStreamThreadId;
+  useEffect(
+    () => () => {
+      const streamingThreadId = streamingThreadIdRef.current;
+      const rememberedRunId = streamingThreadId
+        ? readReconnectRun(streamingThreadId)
+        : null;
+      if (streamingThreadId && rememberedRunId) {
+        clearReconnectRun(streamingThreadId, rememberedRunId);
+      }
+      threadRef.current.stop().catch(() => {
+        // Aborting the stream must never surface as an error while the view is
+        // already gone; the run itself keeps going on the Gateway.
+      });
+    },
+    [],
+  );
+
   const { isLoading: isThreadLoading, joinStream } = thread;
   const runInputAccount = useContext(AuthQueryScopeContext);
   const approvalFeature = useToolApprovalFeature(!!runInputAccount && !isMock);

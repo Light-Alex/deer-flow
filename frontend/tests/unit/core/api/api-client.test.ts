@@ -740,18 +740,33 @@ test("requests incremental modes for initial and rejoined chat streams", async (
   expect(joinedStreamModes).toEqual(incrementalModes);
 });
 
-test("passes AbortSignals through initial and directly-signalled join streams", async () => {
+test("forwards cancellation to initial and directly-signalled join streams", async () => {
   const sessionStorage = makeSessionStorage();
   const initialController = new AbortController();
   const joinController = new AbortController();
   let initialSignal: AbortSignal | null | undefined;
   let joinSignal: AbortSignal | null | undefined;
+  const encoder = new TextEncoder();
+  const openBody = () =>
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'id: 1-0\nevent: custom\ndata: {"phase":"started"}\n\n',
+          ),
+        );
+      },
+    });
   const fetchFn = rs.fn(async (url: string | URL, init?: RequestInit) => {
     const requestUrl = new URL(url.toString());
     if (requestUrl.pathname.endsWith("/threads/thread-signal/runs/stream")) {
       initialSignal = init?.signal;
-      return makeSSEResponse("event: end\ndata: null\n\n", {
-        "Content-Location": "/threads/thread-signal/runs/run-signal",
+      return new Response(openBody(), {
+        status: 200,
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Content-Location": "/threads/thread-signal/runs/run-signal",
+        },
       });
     }
     if (requestUrl.pathname.endsWith("/runs/run-signal")) {
@@ -761,7 +776,10 @@ test("passes AbortSignals through initial and directly-signalled join streams", 
     }
     if (requestUrl.pathname.endsWith("/runs/run-signal/stream")) {
       joinSignal = init?.signal;
-      return makeSSEResponse("event: end\ndata: null\n\n");
+      return new Response(openBody(), {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
     }
     return new Response(JSON.stringify({ detail: "unexpected request" }), {
       status: 500,
@@ -773,23 +791,27 @@ test("passes AbortSignals through initial and directly-signalled join streams", 
   });
   rs.stubGlobal("fetch", fetchFn);
 
-  for await (const _entry of getAPIClient(true).runs.stream(
+  const initialStream = getAPIClient(true).runs.stream(
     "thread-signal",
     "lead_agent",
     { signal: initialController.signal },
-  )) {
-    void _entry;
-  }
-  for await (const _entry of getAPIClient(true).runs.joinStream(
+  );
+  await initialStream.next();
+  initialController.abort();
+  expect(initialSignal?.aborted).toBe(true);
+  expect(initialSignal?.reason).toBe(initialController.signal.reason);
+  await initialStream.return(undefined);
+
+  const joinStream = getAPIClient(true).runs.joinStream(
     "thread-signal",
     "run-signal",
     joinController.signal,
-  )) {
-    void _entry;
-  }
-
-  expect(initialSignal).toBe(initialController.signal);
-  expect(joinSignal).toBe(joinController.signal);
+  );
+  await joinStream.next();
+  joinController.abort();
+  expect(joinSignal?.aborted).toBe(true);
+  expect(joinSignal?.reason).toBe(joinController.signal.reason);
+  await joinStream.return(undefined);
 });
 
 test("recovers a join stream gap from durable state and resumes after the retained tail", async () => {
@@ -1466,8 +1488,12 @@ test.each(["initial", "join"] as const)(
         });
       }
       if (path.endsWith("/threads/thread-abort/state")) {
-        expect(init?.signal).toBe(controller.signal);
+        // Recovery reads share the stream's signal, so cancelling the caller
+        // cancels the durable-state read as well.
+        const stateSignal = init?.signal;
+        expect(stateSignal?.aborted).toBe(false);
         controller.abort();
+        expect(stateSignal?.aborted).toBe(true);
         throw abortError;
       }
       throw new Error(`Unexpected request: ${path}`);
@@ -1495,3 +1521,47 @@ test.each(["initial", "join"] as const)(
     expect(sessionStorage.setItem).not.toHaveBeenCalled();
   },
 );
+
+test("closes the stream request when the consumer stops early", async () => {
+  const sessionStorage = makeSessionStorage();
+  const encoder = new TextEncoder();
+  let requestSignal: AbortSignal | null | undefined;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(
+        encoder.encode('id: 1-0\nevent: custom\ndata: {"phase":"started"}\n\n'),
+      );
+      // Stay open: the run is still streaming, so only the consumer closing the
+      // wrapper may release this connection.
+    },
+  });
+  const fetchFn = rs.fn(async (_url: string | URL, init?: RequestInit) => {
+    requestSignal = init?.signal;
+    return new Response(body, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Content-Location": "/threads/thread-stop/runs/run-stop",
+        Location:
+          "/threads/thread-stop/runs/run-stop/stream?stream_mode=custom",
+      },
+    });
+  });
+  rs.stubGlobal("window", {
+    location: { origin: "http://localhost:2026" },
+    sessionStorage,
+  });
+  rs.stubGlobal("fetch", fetchFn);
+
+  for await (const entry of getAPIClient(true).runs.stream(
+    "thread-stop",
+    "lead_agent",
+    { input: { messages: [] } },
+  )) {
+    expect(entry.event).toBe("custom");
+    break;
+  }
+
+  expect(fetchFn).toHaveBeenCalledTimes(1);
+  expect(requestSignal?.aborted).toBe(true);
+});
