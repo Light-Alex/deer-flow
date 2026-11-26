@@ -27,8 +27,11 @@ rs.mock("@/core/config", () => ({
 }));
 
 import {
+  AgentAlreadyExistsError,
+  AgentCreateRejectedError,
   AgentsApiDisabledError,
   checkAgentName,
+  createAgent,
   exportAgentPackage,
   importAgentPackage,
   updateAgent,
@@ -150,6 +153,112 @@ describe("checkAgentName", () => {
     mockedFetch.mockResolvedValueOnce(jsonResponse(422, { detail }));
     await expect(checkAgentName("deal.agent")).rejects.not.toBeInstanceOf(
       AgentsApiDisabledError,
+    );
+  });
+});
+
+describe("createAgent", () => {
+  const request = { name: "code-reviewer", soul: "You review code." };
+
+  test("returns the created agent", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(201, { name: "code-reviewer", soul: "You review code." }),
+    );
+
+    await expect(createAgent(request)).resolves.toMatchObject({
+      name: "code-reviewer",
+    });
+    const [url, init] = mockedFetch.mock.calls[0]!;
+    expect(url).toBe("/api/agents");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(init?.body as string)).toEqual(request);
+  });
+
+  test("maps a 409 to AgentAlreadyExistsError", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(409, { detail: "Agent 'code-reviewer' already exists" }),
+    );
+
+    const error = await createAgent(request).catch((reason) => reason);
+
+    expect(error).toBeInstanceOf(AgentAlreadyExistsError);
+    expect(error.message).toBe("Agent 'code-reviewer' already exists");
+  });
+
+  test("keeps the agents_api-disabled 403 on AgentsApiDisabledError", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(403, {
+        detail:
+          "Custom-agent management API is disabled. Set agents_api.enabled=true to expose agent and user-profile routes over HTTP.",
+      }),
+    );
+
+    await expect(createAgent(request)).rejects.toBeInstanceOf(
+      AgentsApiDisabledError,
+    );
+  });
+
+  test.each([
+    { status: 422, detail: "Invalid display name 'Reviewer'" },
+    { status: 403, detail: "Permission denied: agents:write" },
+  ])(
+    "keeps an actionable $status detail for the caller",
+    async ({ status, detail }) => {
+      mockedFetch.mockResolvedValueOnce(jsonResponse(status, { detail }));
+
+      const error = await createAgent(request).catch((reason) => reason);
+
+      expect(error).toBeInstanceOf(AgentCreateRejectedError);
+      expect(error.status).toBe(status);
+      expect(error.detail).toBe(detail);
+      expect(error.message).toBe(detail);
+    },
+  );
+
+  test("flattens a pydantic 422 issue list into a readable detail", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(422, {
+        detail: [
+          {
+            type: "value_error",
+            loc: ["body", "display_name"],
+            msg: "Value error, Display name must not contain control characters",
+          },
+          { type: "missing", loc: ["body", "soul"], msg: "Field required" },
+        ],
+      }),
+    );
+
+    const error = await createAgent(request).catch((reason) => reason);
+
+    expect(error).toBeInstanceOf(AgentCreateRejectedError);
+    expect(error.detail).toBe(
+      "Display name must not contain control characters; Field required",
+    );
+  });
+
+  test("falls back when a 422 detail is not readable", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: { unexpected: "value" } }), {
+        status: 422,
+        statusText: "Unprocessable Entity",
+      }),
+    );
+
+    const error = await createAgent(request).catch((reason) => reason);
+
+    expect(error).toBeInstanceOf(AgentCreateRejectedError);
+    expect(error.detail).toBeNull();
+    expect(error.message).toBe("Failed to create agent: Unprocessable Entity");
+  });
+
+  test("reports an unexpected failure with the backend detail", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(500, { detail: "Failed to create agent" }),
+    );
+
+    await expect(createAgent(request)).rejects.toThrow(
+      "Failed to create agent",
     );
   });
 });

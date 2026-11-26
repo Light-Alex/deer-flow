@@ -27,7 +27,7 @@ Custom agents are named variants of the Lead Agent. Each one can have:
 
 Custom agents are created and managed through:
 
-- **The App UI**: open the Agents section in the settings panel.
+- **The App UI**: open the Agents section in the settings panel. Create an agent by describing it in a conversation and then choosing **Save agent** from the top-right menu, or fill in the form yourself: name, description, system prompt (stored as SOUL.md), default model, and capabilities. The agent settings dialog edits the description and system prompt afterwards.
 - **The Gateway API**: `POST /api/agents` with the agent definition.
 
 Both paths require `agents_api.enabled: true` in `config.yaml`. The management API is disabled by default and should be exposed only within a trusted boundary.

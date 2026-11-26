@@ -27,6 +27,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { AGENT_NAME_RE } from "@/components/workspace/agents/agent-manual-form-helpers";
 import { ArtifactsProvider } from "@/components/workspace/artifacts";
 import { MessageList } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
@@ -52,7 +53,6 @@ import { cn } from "@/lib/utils";
 type Step = "name" | "chat";
 type SetupAgentStatus = "idle" | "requested" | "completed";
 
-const NAME_RE = /^[A-Za-z0-9-]+$/;
 const SAVE_HINT_STORAGE_KEY = "deerflow.agent-create.save-hint-seen";
 const AGENT_READ_RETRY_DELAYS_MS = [200, 500, 1_000, 2_000];
 
@@ -151,7 +151,7 @@ export default function NewAgentPage() {
   const handleConfirmName = useCallback(async () => {
     const trimmed = nameInput.trim();
     if (!trimmed) return;
-    if (!NAME_RE.test(trimmed)) {
+    if (!AGENT_NAME_RE.test(trimmed)) {
       setNameError(t.agents.nameStepInvalidError);
       return;
     }
@@ -229,6 +229,15 @@ export default function NewAgentPage() {
       e.preventDefault();
       void handleConfirmName();
     }
+  };
+
+  const handleManualEntry = () => {
+    const trimmed = nameInput.trim();
+    router.push(
+      trimmed
+        ? `/workspace/agents/new/manual?name=${encodeURIComponent(trimmed)}`
+        : "/workspace/agents/new/manual",
+    );
   };
 
   const handleChatSubmit = useCallback(
@@ -396,6 +405,14 @@ export default function NewAgentPage() {
                 disabled={!nameInput.trim() || isCheckingName}
               >
                 {t.agents.nameStepContinue}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                onClick={handleManualEntry}
+              >
+                {t.agents.manualCreateEntry}
               </Button>
             </div>
           </div>

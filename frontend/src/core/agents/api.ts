@@ -37,8 +37,64 @@ export class AgentsApiDisabledError extends Error {
   }
 }
 
+/**
+ * The name is already taken, either seen by the pre-create availability check
+ * or raced into the create itself (HTTP 409). Callers surface the localized
+ * "already exists" message instead of the backend's English detail.
+ */
+export class AgentAlreadyExistsError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentAlreadyExistsError";
+  }
+}
+
+/**
+ * The create was refused for a reason the caller can act on: a 422 validation
+ * (an invisible display-name character, a model removed from the catalog) or a
+ * 403 without agents:write. The backend `detail` names the cause.
+ */
+export class AgentCreateRejectedError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly detail: string | null = null,
+  ) {
+    super(message);
+    this.name = "AgentCreateRejectedError";
+  }
+}
+
 function isAgentsApiDisabledDetail(detail: string | undefined): boolean {
   return typeof detail === "string" && detail.includes("agents_api.enabled");
+}
+
+/**
+ * Readable message from a FastAPI error body. Its `detail` is a string for the
+ * router's own `HTTPException`s and an array of `{msg}` issues for request-body
+ * validation; anything else (a nested object, a blank string) yields null so
+ * the caller can use its localized fallback. Pydantic prefixes messages raised
+ * by a `BeforeValidator` with "Value error, ", which says nothing to a user.
+ */
+function errorDetailMessage(detail: unknown): string | null {
+  if (typeof detail === "string") {
+    return detail.trim() ? detail : null;
+  }
+  if (!Array.isArray(detail)) {
+    return null;
+  }
+  const message = detail
+    .filter(
+      (issue): issue is { msg: string } =>
+        typeof issue === "object" &&
+        issue !== null &&
+        "msg" in issue &&
+        typeof issue.msg === "string" &&
+        issue.msg.trim().length > 0,
+    )
+    .map((issue) => issue.msg.replace(/^Value error, /, ""))
+    .join("; ");
+  return message.trim() ? message : null;
 }
 
 export async function listAgents(): Promise<Agent[]> {
@@ -70,11 +126,24 @@ export async function createAgent(request: CreateAgentRequest): Promise<Agent> {
     body: JSON.stringify(request),
   });
   if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as { detail?: string };
-    if (isAgentsApiDisabledDetail(err.detail)) {
-      throw new AgentsApiDisabledError(err.detail!);
+    const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+    const detail = errorDetailMessage(body.detail);
+    if (isAgentsApiDisabledDetail(detail ?? undefined)) {
+      throw new AgentsApiDisabledError(detail!);
     }
-    throw new Error(err.detail ?? `Failed to create agent: ${res.statusText}`);
+    if (res.status === 409) {
+      throw new AgentAlreadyExistsError(
+        detail ?? `Agent already exists: ${res.statusText}`,
+      );
+    }
+    if (res.status === 422 || res.status === 403) {
+      throw new AgentCreateRejectedError(
+        detail ?? `Failed to create agent: ${res.statusText}`,
+        res.status,
+        detail,
+      );
+    }
+    throw new Error(detail ?? `Failed to create agent: ${res.statusText}`);
   }
   return res.json() as Promise<Agent>;
 }
@@ -104,24 +173,9 @@ export async function importAgentPackage(
     const err = (await res.json().catch(() => null)) as {
       detail?: unknown;
     } | null;
-    const detail = err?.detail;
-    const message = Array.isArray(detail)
-      ? detail
-          .filter(
-            (issue): issue is { msg: string } =>
-              typeof issue === "object" &&
-              issue !== null &&
-              "msg" in issue &&
-              typeof issue.msg === "string" &&
-              issue.msg.trim().length > 0,
-          )
-          .map((issue) => issue.msg)
-          .join("; ")
-      : typeof detail === "string"
-        ? detail
-        : null;
     throw new Error(
-      message?.trim() ? message : `Failed to import agent: ${res.statusText}`,
+      errorDetailMessage(err?.detail) ??
+        `Failed to import agent: ${res.statusText}`,
     );
   }
   return res.json() as Promise<Agent>;

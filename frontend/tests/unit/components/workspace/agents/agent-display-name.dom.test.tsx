@@ -265,3 +265,131 @@ describe("custom agent tool groups", () => {
     expect(request).not.toHaveProperty("tool_groups");
   });
 });
+
+describe("agent description and system prompt edits", () => {
+  function savedRequest(call: number) {
+    return (
+      mutateAsync.mock.calls[call]![0] as { request: Record<string, unknown> }
+    ).request;
+  }
+
+  it("saves an edited description and system prompt, trimmed", async () => {
+    render(
+      <AgentSettingsDialog
+        agent={{ ...agent, soul: "Old prompt" }}
+        open
+        onOpenChange={rs.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(enUS.agents.descriptionLabel), {
+      target: { value: "  Reviews pull requests.  " },
+    });
+    fireEvent.change(screen.getByLabelText(enUS.agents.soulLabel), {
+      target: { value: "  New prompt  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    expect(savedRequest(0)).toMatchObject({
+      description: "Reviews pull requests.",
+      soul: "New prompt",
+    });
+  });
+
+  it("omits both when the fields are untouched", async () => {
+    render(
+      <AgentSettingsDialog
+        agent={{ ...agent, description: "Existing", soul: "Existing prompt" }}
+        open
+        onOpenChange={rs.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    expect(savedRequest(0)).not.toHaveProperty("description");
+    expect(savedRequest(0)).not.toHaveProperty("soul");
+  });
+
+  it("refuses to clear an existing system prompt", async () => {
+    render(
+      <AgentSettingsDialog
+        agent={{ ...agent, soul: "Existing prompt" }}
+        open
+        onOpenChange={rs.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(enUS.agents.soulLabel), {
+      target: { value: "   " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(enUS.agents.soulRequiredError),
+    );
+    expect(mutateAsync).not.toHaveBeenCalled();
+  });
+
+  it("saves other fields for an agent that never had a system prompt", async () => {
+    render(
+      <AgentSettingsDialog
+        agent={{ ...agent, soul: null }}
+        open
+        onOpenChange={rs.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(enUS.agents.descriptionLabel), {
+      target: { value: "New description" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    expect(savedRequest(0)).toMatchObject({ description: "New description" });
+    expect(savedRequest(0)).not.toHaveProperty("soul");
+  });
+
+  it("saves a partial agent payload that omits both fields", async () => {
+    // An older Gateway or a test fixture may not send these keys at all.
+    const partial = {
+      name: "reviewer",
+      tool_groups: null,
+      skills: null,
+    } as unknown as Agent;
+    render(<AgentSettingsDialog agent={partial} open onOpenChange={rs.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    expect(savedRequest(0)).not.toHaveProperty("description");
+    expect(savedRequest(0)).not.toHaveProperty("soul");
+  });
+
+  it("does not treat a background refresh as an edit of the opening text", async () => {
+    const opened = { ...agent, description: "Old", soul: "Old prompt" };
+    const { rerender } = render(
+      <AgentSettingsDialog agent={opened} open onOpenChange={rs.fn()} />,
+    );
+    rerender(
+      <AgentSettingsDialog
+        agent={{ ...opened, description: "Newer", soul: "Newer prompt" }}
+        open
+        onOpenChange={rs.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Display name"), {
+      target: { value: "Rename only" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    // The draft still holds the opening text; sending it would overwrite the
+    // value the refresh delivered from another tab.
+    expect(savedRequest(0)).not.toHaveProperty("description");
+    expect(savedRequest(0)).not.toHaveProperty("soul");
+  });
+});

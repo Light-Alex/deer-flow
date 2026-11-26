@@ -1530,6 +1530,26 @@ export const zhCN: Translations = {
     nameStepCheckErrorWithDetail: "名称校验失败：{detail}",
     nameStepApiDisabledError:
       "服务器未开启自定义智能体管理功能，请联系管理员。",
+    nameRequiredError: "请输入名称",
+    manualCreateEntry: "手动填写详情",
+    manualCreateTitle: "手动创建智能体",
+    manualCreateIntro:
+      "直接填写智能体的名称、系统提示词、模型与能力，创建后还可以在智能体设置里继续调整。",
+    sectionBasics: "基本信息",
+    sectionPrompt: "系统提示词",
+    sectionModel: "模型",
+    nameLabel: "名称",
+    descriptionLabel: "描述",
+    descriptionHint: "显示在智能体卡片上。",
+    descriptionPlaceholder: "一句话说明这个智能体做什么",
+    soulLabel: "系统提示词",
+    soulHint:
+      "保存为 SOUL.md，定义智能体的角色、语气与行为边界。支持 Markdown。",
+    soulPlaceholder: "你是一个……",
+    soulRequiredError: "请填写系统提示词",
+    createSubmit: "创建智能体",
+    creating: "正在创建...",
+    createFailed: "创建智能体失败，请稍后重试。",
     nameStepBootstrapMessage:
       "新智能体的名称是 {name}。请先帮我设计它的用途、行为方式和 SOUL.md，再保存它。",
     save: "保存智能体",
@@ -1558,7 +1578,7 @@ export const zhCN: Translations = {
     settingsToolGroupsLoadFailed: "无法加载工具组。",
     settingsToolGroupUnavailable: "不可用",
     settingsDescription:
-      "为该智能体设置显示名称和默认模型，模型修改在下一条消息生效。",
+      "调整该智能体的描述、系统提示词、模型与能力，修改在下一条消息生效。",
     settingsKnowledge: "默认知识库",
     settingsKnowledgeHint:
       "新对话默认使用此知识库范围，单条消息可以临时覆盖。选择全部知识库可解除绑定。",

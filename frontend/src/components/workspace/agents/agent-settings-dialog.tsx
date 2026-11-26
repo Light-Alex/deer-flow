@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronRightIcon } from "lucide-react";
-import { useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { useUpdateAgent } from "@/core/agents";
 import type { Agent, ReasoningEffort } from "@/core/agents";
 import { useKnowledgeBaseEnabled } from "@/core/features";
@@ -129,6 +130,24 @@ export function AgentSettingsDialog({
     agent.tool_groups != null &&
     !agent.tool_groups.includes("knowledge");
   const [displayName, setDisplayName] = useState(agent.display_name ?? "");
+  // Snapshot the hand-editable text at open time: a background list refetch
+  // must not turn an untouched draft into an overwrite of newer server text.
+  const [initialText] = useState(() => ({
+    description: agent.description ?? "",
+    soul: agent.soul ?? "",
+  }));
+  // A partial agent payload (older Gateway, test fixture) may omit these.
+  const [description, setDescription] = useState(initialText.description);
+  const [soul, setSoul] = useState(initialText.soul);
+  const mounted = useRef(true);
+  useEffect(() => {
+    // Setup marks it live again: development StrictMode runs mount, cleanup,
+    // mount, and a cleanup-only effect would leave this false for good.
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const [model, setModel] = useState(initialSelections.model);
   const [temperature, setTemperature] = useState(
@@ -217,6 +236,15 @@ export function AgentSettingsDialog({
       toast.error(t.agents.settingsDisplayNameTooLong);
       return;
     }
+    const soulChanged = soul.trim() !== initialText.soul.trim();
+    // Clearing a hand-written prompt is destructive and has no undo in the UI;
+    // a legacy agent that never had one still saves its other fields.
+    if (soulChanged && soul.trim() === "") {
+      toast.error(t.agents.soulRequiredError);
+      return;
+    }
+    const descriptionChanged =
+      description.trim() !== initialText.description.trim();
     const parsedSettings = parseAgentModelSettingsDraft({
       temperature,
       maxTokens,
@@ -235,6 +263,8 @@ export function AgentSettingsDialog({
         name: agent.name,
         request: {
           display_name: displayName.trim() || null,
+          ...(descriptionChanged && { description: description.trim() }),
+          ...(soulChanged && { soul: soul.trim() }),
           ...((knowledgeChanged || clearKnowledgeDefault) && {
             knowledge_scope:
               clearKnowledgeDefault || knowledgeSelection.mode === "all"
@@ -277,9 +307,13 @@ export function AgentSettingsDialog({
           ),
         },
       });
+      // A slower save from a dialog that already closed must not toast over,
+      // or close, the dialog a later open mounted in its place.
+      if (!mounted.current) return;
       toast.success(t.agents.settingsSaved);
       onOpenChange(false);
     } catch (err) {
+      if (!mounted.current) return;
       toast.error(err instanceof Error ? err.message : String(err));
     }
   }
@@ -374,6 +408,51 @@ export function AgentSettingsDialog({
             >
               {t.agents.settingsDisplayNameHint} ({agent.name}){" · "}
               {[...displayName.trim()].length}/100
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <label
+              htmlFor="agent-settings-description"
+              className="text-sm font-medium"
+            >
+              {t.agents.descriptionLabel}
+            </label>
+            <Textarea
+              id="agent-settings-description"
+              className="min-h-16"
+              disabled={updateAgent.isPending}
+              value={description}
+              placeholder={t.agents.descriptionPlaceholder}
+              onChange={(event) => setDescription(event.target.value)}
+              aria-describedby="agent-settings-description-hint"
+            />
+            <p
+              id="agent-settings-description-hint"
+              className="text-muted-foreground text-xs"
+            >
+              {t.agents.descriptionHint}
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <label
+              htmlFor="agent-settings-soul"
+              className="text-sm font-medium"
+            >
+              {t.agents.soulLabel}
+            </label>
+            <Textarea
+              id="agent-settings-soul"
+              className="max-h-[50vh] min-h-40"
+              disabled={updateAgent.isPending}
+              value={soul}
+              onChange={(event) => setSoul(event.target.value)}
+              aria-describedby="agent-settings-soul-hint"
+            />
+            <p
+              id="agent-settings-soul-hint"
+              className="text-muted-foreground text-xs"
+            >
+              {t.agents.soulHint}
             </p>
           </div>
           {/* Default model */}

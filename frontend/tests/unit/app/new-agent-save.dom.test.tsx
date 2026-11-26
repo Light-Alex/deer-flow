@@ -18,12 +18,15 @@ const mocks = rs.hoisted(() => ({
   getAgent: rs.fn(),
   checkAgentName: rs.fn(),
   sendMessage: rs.fn(),
+  routerPush: rs.fn(),
   toastError: rs.fn(),
   toastSuccess: rs.fn(),
   onFinish: undefined as ((state: { messages: Message[] }) => void) | undefined,
 }));
 
-rs.mock("next/navigation", () => ({ useRouter: () => ({ push: rs.fn() }) }));
+rs.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mocks.routerPush }),
+}));
 rs.mock("sonner", () => ({
   toast: { error: mocks.toastError, success: mocks.toastSuccess },
 }));
@@ -106,14 +109,18 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-async function openSetup() {
-  const view = render(
+function renderNameStep() {
+  return render(
     <I18nContext.Provider
       value={{ locale: "en-US", setLocale: () => undefined, t: enUS }}
     >
       <NewAgentPage />
     </I18nContext.Provider>,
   );
+}
+
+async function openSetup() {
+  const view = renderNameStep();
   fireEvent.change(
     screen.getByPlaceholderText(enUS.agents.nameStepPlaceholder),
     {
@@ -178,6 +185,7 @@ beforeEach(() => {
   mocks.getAgent.mockReset().mockRejectedValue(new Error("not visible yet"));
   mocks.checkAgentName.mockReset().mockResolvedValue({ available: true });
   mocks.sendMessage.mockReset().mockResolvedValue(undefined);
+  mocks.routerPush.mockReset();
   mocks.toastError.mockReset();
   mocks.toastSuccess.mockReset();
   mocks.onFinish = undefined;
@@ -337,5 +345,36 @@ describe("New-Agent Save read-back ownership", () => {
         .hasAttribute("disabled"),
     ).toBe(false);
     expect(mocks.getAgent).not.toHaveBeenCalled();
+  });
+});
+
+describe("manual creation entry", () => {
+  it("carries the typed name into the manual form", () => {
+    renderNameStep();
+    fireEvent.change(
+      screen.getByPlaceholderText(enUS.agents.nameStepPlaceholder),
+      { target: { value: "Code-Reviewer" } },
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: enUS.agents.manualCreateEntry }),
+    );
+
+    expect(mocks.routerPush).toHaveBeenCalledWith(
+      "/workspace/agents/new/manual?name=Code-Reviewer",
+    );
+    expect(mocks.checkAgentName).not.toHaveBeenCalled();
+  });
+
+  it("opens the manual form without a name when the input is empty", () => {
+    renderNameStep();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: enUS.agents.manualCreateEntry }),
+    );
+
+    expect(mocks.routerPush).toHaveBeenCalledWith(
+      "/workspace/agents/new/manual",
+    );
   });
 });

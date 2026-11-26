@@ -1631,6 +1631,26 @@ export const enUS: Translations = {
     nameStepCheckErrorWithDetail: "Name check failed: {detail}",
     nameStepApiDisabledError:
       "Custom agent management is not enabled on this server. Please contact your administrator.",
+    nameRequiredError: "Enter a name",
+    manualCreateEntry: "Fill in details manually",
+    manualCreateTitle: "Create an agent manually",
+    manualCreateIntro:
+      "Name the agent, write its system prompt, and choose its model and capabilities. You can adjust the rest in agent settings afterwards.",
+    sectionBasics: "Basics",
+    sectionPrompt: "System prompt",
+    sectionModel: "Model",
+    nameLabel: "Name",
+    descriptionLabel: "Description",
+    descriptionHint: "Shown on the agent card.",
+    descriptionPlaceholder: "One line about what this agent does",
+    soulLabel: "System prompt",
+    soulHint:
+      "Saved as SOUL.md. Defines the agent's role, tone, and behavioral limits. Markdown is supported.",
+    soulPlaceholder: "You are ...",
+    soulRequiredError: "Enter a system prompt",
+    createSubmit: "Create agent",
+    creating: "Creating...",
+    createFailed: "Could not create the agent. Try again.",
     nameStepBootstrapMessage:
       "The new custom agent name is {name}. Help me design its purpose, behavior, and SOUL.md before saving it.",
     save: "Save agent",
@@ -1663,7 +1683,7 @@ export const enUS: Translations = {
     settingsToolGroupsLoadFailed: "Tool groups could not be loaded.",
     settingsToolGroupUnavailable: "unavailable",
     settingsDescription:
-      "Choose a display name and model defaults for this agent. Model changes take effect on the next message.",
+      "Adjust this agent's description, system prompt, model, and capabilities. Changes take effect on the next message.",
     settingsKnowledge: "Default knowledge",
     settingsKnowledgeHint:
       "New conversations use this knowledge scope. Individual messages can override it. Selecting all knowledge bases removes the binding.",
